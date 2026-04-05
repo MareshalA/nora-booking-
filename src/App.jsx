@@ -3,8 +3,8 @@ import { useState, useEffect, useCallback } from "react";
 // ═══════════════════════════════════════════════════════
 // ██  CONFIGURATION SUPABASE — À REMPLIR  ██
 // ═══════════════════════════════════════════════════════
-const SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";
-const SUPABASE_KEY = "YOUR_ANON_KEY";
+const SUPABASE_URL = "https://negcqsbonsdhvymfujff.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5lZ2Nxc2JvbnNkaHZ5bWZ1amZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3OTkxNDcsImV4cCI6MjA5MDM3NTE0N30.uD6byRpnau2ddx65tBhrFz_0PeUHrgFerHEBW6T87lM";
 
 // Webhook n8n pour notifications (optionnel)
 const WEBHOOK_URL = "https://your-n8n.com/webhook/new-booking";
