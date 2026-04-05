@@ -1,0 +1,530 @@
+import { useState, useEffect, useCallback } from "react";
+
+// ═══════════════════════════════════════════════════════
+// ██  CONFIGURATION SUPABASE — À REMPLIR  ██
+// ═══════════════════════════════════════════════════════
+const SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";
+const SUPABASE_KEY = "YOUR_ANON_KEY";
+
+// Webhook n8n pour notifications (optionnel)
+const WEBHOOK_URL = "https://your-n8n.com/webhook/new-booking";
+
+// ═══════════════════════════════════════════════════════
+// Récupère tenant_id depuis l'URL: ?tenant=xxx
+// ═══════════════════════════════════════════════════════
+function getTenantId() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("tenant") || null;
+  } catch {
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// Supabase REST helpers
+// ═══════════════════════════════════════════════════════
+const headers = {
+  apikey: SUPABASE_KEY,
+  Authorization: `Bearer ${SUPABASE_KEY}`,
+  "Content-Type": "application/json",
+};
+
+async function sbGet(table, query = "") {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, { headers });
+  if (!res.ok) throw new Error(`GET ${table} failed`);
+  return res.json();
+}
+
+async function sbPost(table, data) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "return=representation" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`POST ${table} failed`);
+  return res.json();
+}
+
+// ═══════════════════════════════════════════════════════
+// Slot generation from real availability + appointments
+// ═══════════════════════════════════════════════════════
+function generateRealSlots(availability, appointments, dureeMins, days = 7) {
+  const result = [];
+  const now = new Date();
+  const slotStep = 30; // intervalle 30 min
+
+  for (let d = 0; d < days; d++) {
+    const date = new Date(now);
+    date.setDate(date.getDate() + d);
+    const dow = date.getDay(); // 0=dim
+
+    // Trouver la dispo pour ce jour
+    const avail = availability.find((a) => a.day_of_week === dow);
+    if (!avail || avail.is_closed) continue;
+
+    const [sh, sm] = avail.start_time.split(":").map(Number);
+    const [eh, em] = avail.end_time.split(":").map(Number);
+    const startMin = sh * 60 + sm;
+    const endMin = eh * 60 + em;
+
+    const daySlots = [];
+
+    for (let m = startMin; m + dureeMins <= endMin; m += slotStep) {
+      const slotStart = new Date(date);
+      slotStart.setHours(Math.floor(m / 60), m % 60, 0, 0);
+
+      if (slotStart <= now) continue;
+
+      const slotEnd = new Date(slotStart.getTime() + dureeMins * 60000);
+
+      // Check conflit avec rdv existants
+      const busy = appointments.some((appt) => {
+        const apptStart = new Date(appt.scheduled_at);
+        const apptDuree = appt.duree_minutes || 30;
+        const apptEnd = new Date(apptStart.getTime() + apptDuree * 60000);
+        return slotStart < apptEnd && slotEnd > apptStart;
+      });
+
+      daySlots.push({
+        time: slotStart,
+        hour: Math.floor(m / 60),
+        minute: m % 60,
+        busy,
+        label: `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`,
+      });
+    }
+
+    if (daySlots.length > 0) result.push({ date, daySlots });
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════
+// Components
+// ═══════════════════════════════════════════════════════
+
+function Loader() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh", gap: 16 }}>
+      <div style={{
+        width: 40, height: 40, border: "3px solid var(--bd)", borderTopColor: "var(--accent)",
+        borderRadius: "50%", animation: "spin .8s linear infinite"
+      }} />
+      <div style={{ fontSize: 14, color: "var(--t3)" }}>Chargement...</div>
+    </div>
+  );
+}
+
+function ErrorScreen({ message }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh", gap: 12, padding: 40, textAlign: "center" }}>
+      <div style={{ fontSize: 48 }}>😕</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: "var(--t1)" }}>Oups !</div>
+      <div style={{ fontSize: 14, color: "var(--t3)", maxWidth: 300 }}>{message}</div>
+    </div>
+  );
+}
+
+function ServiceStep({ services, onSelect, selectedCat, setSelectedCat }) {
+  const cats = ["all", ...new Set(services.map((s) => s.categorie).filter(Boolean))];
+  const catLabels = { all: "Tous", laser: "Laser", visage: "Visage", medical: "Médical", corps: "Corps", ongles: "Ongles", soin: "Soins", massage: "Massage", epilation: "Épilation" };
+  const filtered = selectedCat === "all" ? services : services.filter((s) => s.categorie === selectedCat);
+
+  return (
+    <div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: "var(--t1)", marginBottom: 4 }}>Choisissez votre soin</div>
+      <div style={{ fontSize: 13, color: "var(--t3)", marginBottom: 16 }}>Sélectionnez le service qui vous intéresse</div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
+        {cats.map((c) => (
+          <button key={c} onClick={() => setSelectedCat(c)} style={{
+            padding: "7px 16px", borderRadius: 20, border: "1px solid var(--bd)", cursor: "pointer",
+            fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", transition: "all .15s",
+            background: selectedCat === c ? "var(--accent)" : "var(--bg)",
+            color: selectedCat === c ? "#fff" : "var(--t2)",
+            borderColor: selectedCat === c ? "var(--accent)" : "var(--bd)",
+          }}>{catLabels[c] || c.charAt(0).toUpperCase() + c.slice(1)}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {filtered.map((s) => (
+          <button key={s.id} onClick={() => onSelect(s)} style={{
+            display: "flex", alignItems: "center", gap: 14, padding: 16,
+            background: "var(--bg)", border: "1px solid var(--bd)", borderRadius: 14,
+            cursor: "pointer", textAlign: "left", transition: "border-color .15s", width: "100%",
+          }}
+          onMouseOver={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+          onMouseOut={(e) => (e.currentTarget.style.borderColor = "var(--bd)")}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--t1)" }}>{s.service}</div>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginTop: 2 }}>
+                {s.duree_minutes} min
+                {s.description ? ` — ${s.description}` : ""}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              {s.promo ? (
+                <>
+                  <div style={{ fontSize: 11, color: "var(--t3)", textDecoration: "line-through" }}>{s.promo}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#1D9E75" }}>{s.prix} MAD</div>
+                </>
+              ) : (
+                <div style={{ fontSize: 16, fontWeight: 700, color: "var(--t1)" }}>{s.prix} MAD</div>
+              )}
+            </div>
+          </button>
+        ))}
+        {filtered.length === 0 && (
+          <div style={{ textAlign: "center", padding: 32, color: "var(--t3)", fontSize: 14 }}>Aucun service dans cette catégorie</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DateStep({ availability, appointments, service, onSelect }) {
+  const [slots, setSlots] = useState([]);
+  const [selectedDay, setSelectedDay] = useState(0);
+  const dayNames = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+  const monthNames = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"];
+
+  useEffect(() => {
+    const s = generateRealSlots(availability, appointments, service.duree_minutes || 30, 14);
+    setSlots(s);
+  }, [availability, appointments, service]);
+
+  if (slots.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: 40 }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>📅</div>
+        <div style={{ fontSize: 16, fontWeight: 600, color: "var(--t1)" }}>Aucun créneau disponible</div>
+        <div style={{ fontSize: 13, color: "var(--t3)", marginTop: 6 }}>Veuillez réessayer plus tard ou nous contacter directement.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: "var(--t1)", marginBottom: 4 }}>Quand ?</div>
+      <div style={{ fontSize: 13, color: "var(--t3)", marginBottom: 16 }}>Choisissez votre créneau — {service.service} ({service.duree_minutes} min)</div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
+        {slots.map((day, i) => {
+          const d = day.date;
+          const isToday = d.toDateString() === new Date().toDateString();
+          const freeCount = day.daySlots.filter((s) => !s.busy).length;
+          return (
+            <button key={i} onClick={() => setSelectedDay(i)} style={{
+              minWidth: 60, padding: "10px 8px", borderRadius: 14, border: "1px solid var(--bd)",
+              cursor: "pointer", textAlign: "center", transition: "all .15s", position: "relative",
+              background: selectedDay === i ? "var(--accent)" : "var(--bg)",
+              color: selectedDay === i ? "#fff" : "var(--t1)",
+              borderColor: selectedDay === i ? "var(--accent)" : "var(--bd)",
+            }}>
+              <div style={{ fontSize: 10, opacity: 0.7 }}>{isToday ? "Auj." : dayNames[d.getDay()]}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3 }}>{d.getDate()}</div>
+              <div style={{ fontSize: 10, opacity: 0.7 }}>{monthNames[d.getMonth()]}</div>
+              <div style={{ fontSize: 9, marginTop: 2, opacity: 0.6 }}>{freeCount} dispo</div>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+        {slots[selectedDay]?.daySlots.map((s, i) => (
+          <button key={i} disabled={s.busy} onClick={() => onSelect(s.time)} style={{
+            padding: "14px 0", borderRadius: 12,
+            border: s.busy ? "none" : "1px solid var(--bd)",
+            background: s.busy ? "var(--bg2)" : "var(--bg)",
+            color: s.busy ? "var(--t3)" : "var(--t1)",
+            fontSize: 14, fontWeight: 600, cursor: s.busy ? "default" : "pointer",
+            opacity: s.busy ? 0.35 : 1, transition: "all .15s",
+            textDecoration: s.busy ? "line-through" : "none",
+          }}
+          onMouseOver={(e) => { if (!s.busy) e.currentTarget.style.borderColor = "var(--accent)"; }}
+          onMouseOut={(e) => { if (!s.busy) e.currentTarget.style.borderColor = "var(--bd)"; }}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InfoStep({ onSubmit, booking, tenant, submitting }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const inputStyle = {
+    width: "100%", padding: "14px 16px", borderRadius: 12, border: "1px solid var(--bd)",
+    background: "var(--bg)", color: "var(--t1)", fontSize: 15, outline: "none",
+    fontFamily: "inherit", transition: "border-color .15s",
+  };
+  const dayNames = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+  const dt = booking.date;
+
+  return (
+    <div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: "var(--t1)", marginBottom: 4 }}>Vos coordonnées</div>
+      <div style={{ fontSize: 13, color: "var(--t3)", marginBottom: 16 }}>Pour confirmer votre réservation</div>
+      <div style={{ background: "var(--accent-light)", borderRadius: 14, padding: 16, marginBottom: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--accent)" }}>{booking.service.service}</div>
+        <div style={{ fontSize: 12, color: "var(--t2)", marginTop: 4 }}>
+          {dayNames[dt.getDay()]} {dt.getDate()}/{dt.getMonth() + 1} à {String(dt.getHours()).padStart(2, "0")}:{String(dt.getMinutes()).padStart(2, "0")} — {booking.service.duree_minutes} min — {booking.service.prix} MAD
+        </div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 500, color: "var(--t2)", marginBottom: 6, display: "block" }}>Votre nom complet</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fatima Bennani" style={inputStyle}
+            onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
+            onBlur={(e) => (e.target.style.borderColor = "var(--bd)")} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 500, color: "var(--t2)", marginBottom: 6, display: "block" }}>Numéro de téléphone</label>
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="06 12 34 56 78" type="tel" style={inputStyle}
+            onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
+            onBlur={(e) => (e.target.style.borderColor = "var(--bd)")} />
+        </div>
+      </div>
+      <button onClick={() => onSubmit({ name, phone })} disabled={!name || !phone || submitting} style={{
+        width: "100%", padding: 16, borderRadius: 14, border: "none", marginTop: 20,
+        background: name && phone && !submitting ? "var(--accent)" : "var(--bg2)",
+        color: name && phone && !submitting ? "#fff" : "var(--t3)",
+        fontSize: 16, fontWeight: 700, cursor: name && phone && !submitting ? "pointer" : "default",
+        transition: "all .2s",
+      }}>
+        {submitting ? "Réservation en cours..." : "Confirmer la réservation"}
+      </button>
+      <div style={{ fontSize: 11, color: "var(--t3)", textAlign: "center", marginTop: 10 }}>
+        Vous recevrez une confirmation par WhatsApp
+      </div>
+    </div>
+  );
+}
+
+function ConfirmationStep({ booking, tenant }) {
+  const dt = booking.date;
+  const dayNames = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
+  return (
+    <div style={{ textAlign: "center", paddingTop: 20 }}>
+      <div style={{
+        width: 72, height: 72, borderRadius: 20, background: "var(--accent-light)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        margin: "0 auto 20px", fontSize: 36,
+      }}>✓</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: "var(--t1)", marginBottom: 6 }}>Réservation confirmée !</div>
+      <div style={{ fontSize: 14, color: "var(--t3)", marginBottom: 24 }}>Vous recevrez une confirmation par WhatsApp</div>
+      <div style={{
+        background: "var(--bg)", borderRadius: 16, padding: 20, textAlign: "left",
+        border: "1px solid var(--bd)",
+      }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: "var(--t1)", marginBottom: 12 }}>{booking.service.service}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {[
+            ["📅", `${dayNames[dt.getDay()]} ${dt.getDate()}/${dt.getMonth() + 1} à ${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`],
+            ["⏱️", `${booking.service.duree_minutes} minutes`],
+            ["💰", `${booking.service.prix} MAD`],
+            ["📍", tenant?.adresse || ""],
+          ].filter(([, t]) => t).map(([icon, text], i) => (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span style={{ fontSize: 16, width: 24, textAlign: "center" }}>{icon}</span>
+              <span style={{ fontSize: 13, color: "var(--t2)" }}>{text}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{ marginTop: 20, display: "flex", gap: 10 }}>
+        {tenant?.lien_google_maps && (
+          <a href={tenant.lien_google_maps} target="_blank" rel="noreferrer" style={{
+            flex: 1, padding: 14, borderRadius: 12, border: "1px solid var(--bd)",
+            textAlign: "center", fontSize: 13, fontWeight: 600, color: "var(--t1)",
+            textDecoration: "none", background: "var(--bg)",
+          }}>Voir sur Maps</a>
+        )}
+        <button onClick={() => window.location.reload()} style={{
+          flex: 1, padding: 14, borderRadius: 12, border: "none",
+          background: "var(--accent)", color: "#fff", fontSize: 13,
+          fontWeight: 600, cursor: "pointer",
+        }}>Nouveau RDV</button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════
+// Main BookingPage
+// ═══════════════════════════════════════════════════════
+export default function BookingPage() {
+  const [step, setStep] = useState(0);
+  const [booking, setBooking] = useState({ service: null, date: null, client: null });
+  const [selectedCat, setSelectedCat] = useState("all");
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const [tenant, setTenant] = useState(null);
+  const [services, setServices] = useState([]);
+  const [availability, setAvailability] = useState([]);
+  const [appointments, setAppointments] = useState([]);
+
+  const tenantId = getTenantId();
+
+  // ── Chargement initial ──
+  useEffect(() => {
+    if (!tenantId) {
+      setError("Lien invalide — paramètre tenant manquant.");
+      setLoading(false);
+      return;
+    }
+    (async () => {
+      try {
+        const [tenantData, offersData, availData] = await Promise.all([
+          sbGet("tenants", `id=eq.${tenantId}&select=*`),
+          sbGet("offers", `tenant_id=eq.${tenantId}&active=eq.true&select=*&order=categorie,service`),
+          sbGet("availability", `tenant_id=eq.${tenantId}&select=*&order=day_of_week`),
+        ]);
+
+        if (!tenantData.length) throw new Error("Centre introuvable");
+        setTenant(tenantData[0]);
+        setServices(offersData);
+        setAvailability(availData);
+
+        // Charger les RDV des 14 prochains jours pour vérifier les conflits
+        const now = new Date();
+        const future = new Date(now);
+        future.setDate(future.getDate() + 14);
+        const apptData = await sbGet(
+          "appointments",
+          `tenant_id=eq.${tenantId}&status=eq.confirmed&scheduled_at=gte.${now.toISOString()}&scheduled_at=lte.${future.toISOString()}&select=scheduled_at,service_name,offer_id`
+        );
+        // Enrichir avec la durée du service
+        const enriched = apptData.map((a) => {
+          const svc = offersData.find((o) => o.id === a.offer_id);
+          return { ...a, duree_minutes: svc?.duree_minutes || 30 };
+        });
+        setAppointments(enriched);
+      } catch (e) {
+        setError(e.message || "Erreur de chargement");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [tenantId]);
+
+  // ── Soumission du RDV ──
+  const handleSubmit = useCallback(async (client) => {
+    setSubmitting(true);
+    setBooking((b) => ({ ...b, client }));
+    try {
+      const dt = booking.date;
+      const apptPayload = {
+        tenant_id: tenantId,
+        customer_phone: client.phone,
+        customer_name: client.name,
+        offer_id: booking.service.id,
+        service_name: booking.service.service,
+        scheduled_at: dt.toISOString(),
+        status: "confirmed",
+      };
+      await sbPost("appointments", apptPayload);
+
+      // Notification webhook (optionnel, ne bloque pas)
+      try {
+        await fetch(tenant?.booking_url || WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: client.name,
+            phone: client.phone,
+            service: booking.service.service,
+            date: `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`,
+            hour: `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`,
+            prix: booking.service.prix,
+            duree: booking.service.duree_minutes,
+            tenant_id: tenantId,
+          }),
+        });
+      } catch {}
+
+      setStep(3);
+    } catch (e) {
+      alert("Erreur lors de la réservation. Veuillez réessayer.");
+      console.error(e);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [booking, tenantId, tenant]);
+
+  return (
+    <div style={{
+      fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif",
+      maxWidth: 480, margin: "0 auto", minHeight: "100vh",
+      background: "var(--page-bg)", color: "var(--t1)",
+    }}>
+      <style>{`
+        :root {
+          --page-bg: #F6F5F0; --bg: #FFFFFF; --bg2: #F0EFE9; --bd: #E5E4DE;
+          --t1: #1A1A18; --t2: #6B6A65; --t3: #9C9B96;
+          --accent: #1D9E75; --accent-light: #E1F5EE;
+        }
+        @media (prefers-color-scheme: dark) {
+          :root {
+            --page-bg: #141413; --bg: #1E1E1C; --bg2: #2A2A27; --bd: #3A3A36;
+            --t1: #E8E7E1; --t2: #9C9B96; --t3: #6B6A65;
+            --accent: #5DCAA5; --accent-light: #085041;
+          }
+        }
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        input::placeholder { color: var(--t3); }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+
+      {loading ? <Loader /> : error ? <ErrorScreen message={error} /> : (
+        <>
+          <div style={{ padding: "20px 20px 0" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+              {step > 0 && step < 3 && (
+                <button onClick={() => setStep(step - 1)} style={{
+                  width: 36, height: 36, borderRadius: 10, border: "1px solid var(--bd)",
+                  background: "var(--bg)", cursor: "pointer", display: "flex",
+                  alignItems: "center", justifyContent: "center", fontSize: 16, color: "var(--t2)",
+                }}>←</button>
+              )}
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--t1)" }}>{tenant?.nom_centre || "Réservation"}</div>
+                <div style={{ fontSize: 12, color: "var(--t3)" }}>{tenant?.adresse || ""}</div>
+              </div>
+            </div>
+            {step < 3 && (
+              <div style={{ display: "flex", gap: 4, marginTop: 16, marginBottom: 8 }}>
+                {[0, 1, 2].map((i) => (
+                  <div key={i} style={{
+                    flex: 1, height: 3, borderRadius: 2,
+                    background: i <= step ? "var(--accent)" : "var(--bd)",
+                    transition: "background .3s",
+                  }} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ padding: "16px 20px 32px" }}>
+            {step === 0 && (
+              <ServiceStep services={services} selectedCat={selectedCat} setSelectedCat={setSelectedCat}
+                onSelect={(s) => { setBooking((b) => ({ ...b, service: s })); setStep(1); }} />
+            )}
+            {step === 1 && booking.service && (
+              <DateStep availability={availability} appointments={appointments} service={booking.service}
+                onSelect={(d) => { setBooking((b) => ({ ...b, date: d })); setStep(2); }} />
+            )}
+            {step === 2 && booking.date && (
+              <InfoStep booking={booking} tenant={tenant} submitting={submitting}
+                onSubmit={handleSubmit} />
+            )}
+            {step === 3 && <ConfirmationStep booking={booking} tenant={tenant} />}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
