@@ -165,7 +165,7 @@ function ServiceStep({ services, onSelect, selectedCat, setSelectedCat }) {
             <div style={{ textAlign: "right" }}>
               {s.promo ? (
                 <>
-                  <div style={{ fontSize: 11, color: "var(--t3)", textDecoration: "line-through" }}>{s.promo}</div>
+                  <div style={{ fontSize: 10, color: "#fff", background: "#1D9E75", borderRadius: 6, padding: "2px 8px", marginBottom: 4, display: "inline-block" }}>{s.promo}</div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#1D9E75" }}>{s.prix} MAD</div>
                 </>
               ) : (
