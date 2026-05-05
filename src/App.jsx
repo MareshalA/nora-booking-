@@ -305,6 +305,7 @@ function DateStep({ availability, appointments, service, onSelect }) {
 function InfoStep({ onSubmit, booking, tenant, submitting, userPhone }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState(userPhone || "");
+  const [email, setEmail] = useState("");
   const hasPhone = !!userPhone;
   const inputStyle = {
     width: "100%", padding: "14px 16px", borderRadius: 12, border: "1px solid var(--bd)",
@@ -327,7 +328,7 @@ function InfoStep({ onSubmit, booking, tenant, submitting, userPhone }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div>
           <label style={{ fontSize: 12, fontWeight: 500, color: "var(--t2)", marginBottom: 6, display: "block" }}>Votre nom complet</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fatima Bennani" style={inputStyle}
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Laila Bennani" style={inputStyle}
             onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
             onBlur={(e) => (e.target.style.borderColor = "var(--bd)")} />
         </div>
@@ -339,8 +340,14 @@ function InfoStep({ onSubmit, booking, tenant, submitting, userPhone }) {
               onBlur={(e) => (e.target.style.borderColor = "var(--bd)")} />
           </div>
         )}
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 500, color: "var(--t2)", marginBottom: 6, display: "block" }}>Email <span style={{ color: "var(--t3)", fontWeight: 400 }}>(pour vos rappels)</span></label>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="fatima@email.com" type="email" style={inputStyle}
+            onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
+            onBlur={(e) => (e.target.style.borderColor = "var(--bd)")} />
+        </div>
       </div>
-      <button onClick={() => onSubmit({ name, phone: hasPhone ? userPhone : phone })} disabled={!name || (!hasPhone && !phone) || submitting} style={{
+      <button onClick={() => onSubmit({ name, phone: hasPhone ? userPhone : phone, email })} disabled={!name || (!hasPhone && !phone) || submitting} style={{
         width: "100%", padding: 16, borderRadius: 14, border: "none", marginTop: 20,
         background: name && (hasPhone || phone) && !submitting ? "var(--accent)" : "var(--bg2)",
         color: name && (hasPhone || phone) && !submitting ? "#fff" : "var(--t3)",
@@ -512,6 +519,7 @@ export default function BookingPage() {
         tenant_id: tenantId,
         customer_phone: client.phone,
         customer_name: client.name,
+        customer_email: client.email || null,
         offer_id: booking.service.id,
         service_name: booking.service.service,
         scheduled_at: dt.toISOString(),
