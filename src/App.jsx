@@ -342,7 +342,7 @@ function InfoStep({ onSubmit, booking, tenant, submitting, userPhone }) {
         )}
         <div>
           <label style={{ fontSize: 12, fontWeight: 500, color: "var(--t2)", marginBottom: 6, display: "block" }}>Email <span style={{ color: "var(--t3)", fontWeight: 400 }}>(pour vos rappels)</span></label>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="fatima@email.com" type="email" style={inputStyle}
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="laila.bennani@email.com" type="email" style={inputStyle}
             onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
             onBlur={(e) => (e.target.style.borderColor = "var(--bd)")} />
         </div>
