@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 
 const SUPABASE_URL = "https://negcqsbonsdhvymfujff.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5lZ2Nxc2JvbnNkaHZ5bWZ1amZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3OTkxNDcsImV4cCI6MjA5MDM3NTE0N30.uD6byRpnau2ddx65tBhrFz_0PeUHrgFerHEBW6T87lM";
-const WEBHOOK_URL = "https://your-n8n.com/webhook/new-booking";
+// Optional N8N webhook for new-booking notifications.
+// Leave empty to disable, or set via tenant.notification_webhook_url in Supabase.
+const WEBHOOK_URL = "";
 
 function getParams() {
   try {
@@ -526,18 +528,21 @@ export default function BookingPage() {
         status: "confirmed",
       });
 
-      // Webhook notification
+      // Webhook notification (optional — only fires if tenant has a real webhook URL)
       try {
-        await fetch(tenant?.booking_url?.includes("webhook") ? tenant.booking_url : WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: client.name, phone: client.phone, service: booking.service.service,
-            date: `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`,
-            hour: `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`,
-            prix: booking.service.prix, duree: booking.service.duree_minutes, tenant_id: tenantId,
-          }),
-        });
+        const webhookUrl = (tenant?.notification_webhook_url || WEBHOOK_URL || "").trim();
+        if (webhookUrl && webhookUrl.startsWith("https://") && !webhookUrl.includes("your-n8n.com")) {
+          await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: client.name, phone: client.phone, service: booking.service.service,
+              date: `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`,
+              hour: `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`,
+              prix: booking.service.prix, duree: booking.service.duree_minutes, tenant_id: tenantId,
+            }),
+          });
+        }
       } catch {}
 
       await reloadAppointments();
